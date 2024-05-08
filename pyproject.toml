@@ -1,0 +1,28 @@
+[project]
+name = "transcoder_circuits"
+version = "0.1.0"
+description = "Default template for PDM package"
+authors = [
+    {name = "Daniel CH Tan", email = "dtch1997@users.noreply.github.com"},
+]
+dependencies = [
+    "matplotlib",
+    "numpy",
+    "plotly",
+    "torch==2.2.0",
+    "tqdm",
+    "transformer-lens>=1.17.0",
+    "datasets==2.12.0",
+    "einops==0.7.0",
+    "setuptools==67.7.2",
+    "wandb==0.16.0",
+    "huggingface-hub>=0.23.0",
+    "ipykernel>=6.29.4",
+]
+requires-python = "==3.12.*"
+readme = "README.md"
+license = {text = "MIT"}
+
+
+[tool.pdm]
+distribution = false
