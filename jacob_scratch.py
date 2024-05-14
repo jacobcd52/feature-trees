@@ -152,7 +152,7 @@ class CircuitFinder:
             # Get MLP feature acts and recons errors
             mlp_recons, mlp_feature_acts  = self.transcoders[layer](cache[mlp_in_pt])[:2]
             self.mlp_feature_acts[:, layer, :]  = mlp_feature_acts.mean(0)
-            self.mlp_is_active[:, layer, :]  = (mlp_feature_acts > self.cfg.feature_act_gate_eps).float().mean(0)
+            self.mlp_is_active[:, layer, :]  = (mlp_feature_acts > 0).float().mean(0)
             self.mlp_errors[:, layer, :] = (cache[mlp_out_pt] - mlp_recons).mean(0)
 
             # Get attention feature acts and recons errors (remember to be careful with z concatenation!)
@@ -160,7 +160,7 @@ class CircuitFinder:
             attn_recons, sae_cache = attn_saes[layer].run_with_cache(z_concat, names_filter='hook_sae_acts_post')
             attn_feature_acts = sae_cache['hook_sae_acts_post']
             self.attn_feature_acts[:, layer, :] = attn_feature_acts.mean(0)
-            self.attn_is_active[:, layer, :] = (attn_feature_acts > self.cfg.feature_act_gate_eps).float().mean(0)
+            self.attn_is_active[:, layer, :] = (attn_feature_acts > 0).float().mean(0)
             z_error = rearrange((attn_recons - z_concat).mean(0), "seq (n_heads d_head) -> seq n_heads d_head", n_heads=self.model.cfg.n_heads)
             resid_error = einsum(z_error, model.W_O[layer], "seq n_heads d_heads, n_heads d_head d_model -> seq d_model")
             self.attn_errors[:, layer, :] = resid_error
@@ -340,10 +340,9 @@ class CircuitFinder:
 
 
 
-
 # %%
 tokens = model.to_tokens(["When John and Mary were at the park, John passed the ball to Mary"])
-cfg = Config(threshold=0.2)
+cfg = Config(threshold=0.15)
 finder = CircuitFinder(cfg, tokens, model, attn_saes, transcoders)
 #%%
 
@@ -362,3 +361,8 @@ for layer in reversed(range(1, model.cfg.n_layers)):
 # %%
 finder.graph
 
+#%%
+print(set([i[0][1] for i in finder.graph]))
+
+#%%
+tokens.shape
