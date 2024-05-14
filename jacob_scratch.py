@@ -113,7 +113,7 @@ class CircuitFinder:
         # We'll store (edge, attrib) pairs here. Initialise by making the metric an important node, by hand.
         # edge = (downstream_node, upstream_node)
         # node = "{module_name}.{layer}.{pos}.{feature_id}"
-        self.graph = [((None, f"metric.{self.n_layers}.-2.0"), None)]
+        self.graph = [((None, f"metric.{self.n_layers}.{self.n_seq-2}.0"), None)]
 
 
     def get_initial_cache(self):
@@ -232,7 +232,8 @@ class CircuitFinder:
            module : str is name of upstream module. Options "mlp", "attn", "metric"  '''
         imp_feature_ids = []
         imp_pos = []
-        for (down_node, up_node), attrib in self.graph:
+        up_nodes_deduped = list(set([edge[1] for (edge, attrib) in self.graph]))
+        for up_node in up_nodes_deduped:
             down_module_, down_layer_, pos, feature_id = up_node.split('.')
             if down_module_ == down_module and down_layer_ == str(down_layer):
                 imp_feature_ids += [int(feature_id)]
@@ -261,13 +262,24 @@ class CircuitFinder:
         # ----- UPSTREAM MLP ATTRIBS ------
         # Get upstream feature acts, since we'll need this for attrib computation
         mlp_active_W_dec, mlp_up_active_layers, mlp_up_active_feature_ids = self.get_active_mlp_W_dec(down_layer)
-        imp_mlp_feature_acts = self.mlp_feature_acts[:, mlp_up_active_layers, mlp_up_active_feature_ids] # [imp_id, up_active_id]
-        imp_mlp_feature_acts = imp_mlp_feature_acts[imp_down_pos]
-        # Compute attribs of imp nodes wrt all upstream MLP nodes
-        mlp_attribs   = einsum(imp_mlp_feature_acts, # TODO RENAME TO ACTIVE_MLP_FEATURE_ACTS
-                              mlp_active_W_dec,
-                              grad, 
-                              "imp_id up_active_id, up_active_id d_model, ... imp_id d_model -> ... imp_id up_active_id")
+        imp_mlp_feature_acts = self.mlp_feature_acts[:, mlp_up_active_layers, mlp_up_active_feature_ids] # [pos, up_active_id]
+        
+        if down_module in ["mlp", "metric"]: # down mlp doesn't mix positions
+            imp_mlp_feature_acts = imp_mlp_feature_acts[imp_down_pos] # [imp_id, up_active_id]
+        
+            # Compute attribs of imp nodes wrt all upstream MLP nodes
+            mlp_attribs   = einsum(imp_mlp_feature_acts, # TODO RENAME TO ACTIVE_MLP_FEATURE_ACTS
+                                mlp_active_W_dec,
+                                grad, 
+                                "imp_id up_active_id, up_active_id d_model, imp_id d_model -> imp_id up_active_id")
+        if down_module in ["attn"]:      
+            # Compute attribs of imp nodes wrt all upstream MLP nodes
+            mlp_attribs   = einsum(imp_mlp_feature_acts, # TODO RENAME TO ACTIVE_MLP_FEATURE_ACTS
+                                mlp_active_W_dec,
+                                grad, 
+                                "seq up_active_id, up_active_id d_model, seq imp_id d_model -> seq imp_id up_active_id")
+
+        
         # attrib can be at most the value of the original downstream feature act
         #mlp_attribs = torch.min(mlp_attribs, imp_mlp_feature_acts)
         self.add_to_graph(mlp_attribs, imp_down_feature_ids, imp_down_pos, down_module_name=down_module, down_layer=down_layer, 
@@ -280,11 +292,18 @@ class CircuitFinder:
         # ----- UPSTREAM ATTENTION ATTRIBS (do exactly the same for attention) -----
         attn_active_W_dec, attn_up_active_layers, attn_up_active_feature_ids = self.get_active_attn_W_dec(down_layer)
         imp_attn_feature_acts = self.attn_feature_acts[:, attn_up_active_layers, attn_up_active_feature_ids] # [imp_id, up_active_id]
-        imp_attn_feature_acts = imp_attn_feature_acts[imp_down_pos]
-        attn_attribs   = einsum(imp_attn_feature_acts,
+        
+        if down_module in ["mlp", "metric"]: # down mlp doesn't mix positions 
+            imp_attn_feature_acts = imp_attn_feature_acts[imp_down_pos] # [imp_id, up_active_id]
+            attn_attribs   = einsum(imp_attn_feature_acts,
                                 attn_active_W_dec,
                                 grad, 
-                               "imp_id up_active_id, up_active_id d_model, ... imp_id d_model -> ... imp_id up_active_id")
+                                "imp_id up_active_id, up_active_id d_model, imp_id d_model -> imp_id up_active_id")
+        if down_module in ["attn"]:      
+            attn_attribs   = einsum(imp_attn_feature_acts, 
+                                attn_active_W_dec,
+                                grad, 
+                                "seq up_active_id, up_active_id d_model, seq imp_id d_model -> seq imp_id up_active_id")        
         #attn_attribs = torch.min(attn_attribs, imp_attn_feature_acts)   
         self.add_to_graph(attn_attribs, imp_down_feature_ids, imp_down_pos, down_module_name=down_module, down_layer=down_layer, 
                           up_module_name="attn", up_active_layers=attn_up_active_layers, up_active_feature_ids=attn_up_active_feature_ids)     
@@ -296,11 +315,10 @@ class CircuitFinder:
     
     def add_to_graph(self, attribs, imp_down_feature_ids, imp_down_pos, down_module_name, down_layer, 
                      up_module_name, up_active_layers, up_active_feature_ids):
+       
         # Convert lists to PyTorch tensors
         imp_down_feature_ids = torch.tensor(imp_down_feature_ids, dtype=torch.long, device=attribs.device)
         imp_down_pos = torch.tensor(imp_down_pos, dtype=torch.long, device=attribs.device)
-        
-        # TODO chained_attribs = # imp_id up_layer up_d_trans
 
         # Create a mask where attribs are greater than the threshold
         mask = attribs > self.cfg.threshold
@@ -327,8 +345,8 @@ class CircuitFinder:
         # Construct edges based on the indices and mask
         edges = [(f"{down_module_name}.{down_layer}.{down_seqs[i]}.{down_feature_ids[i]}", 
                   f"{up_module_name}.{up_layer_ids[i]}.{up_seqs[i]}.{up_feature_ids[i]}")
-                  for i in range(len(imp_ids))]
-        
+                  for i in range(attrib_values.size(0))]
+                
         # Append to the graph
         for edge, value in zip(edges, attrib_values):
             self.graph.append((edge, value.item()))
@@ -342,7 +360,7 @@ class CircuitFinder:
 
 # %%
 tokens = model.to_tokens(["When John and Mary were at the park, John passed the ball to Mary"])
-cfg = Config(threshold=0.15)
+cfg = Config(threshold=0.1)
 finder = CircuitFinder(cfg, tokens, model, attn_saes, transcoders)
 #%%
 
@@ -362,7 +380,10 @@ for layer in reversed(range(1, model.cfg.n_layers)):
 finder.graph
 
 #%%
-print(set([i[0][1] for i in finder.graph]))
+len(finder.graph), len(set(finder.graph))
 
 #%%
 tokens.shape
+# %%
+torch.where(finder.mlp_feature_acts[0,1,:]>0)
+#%%
