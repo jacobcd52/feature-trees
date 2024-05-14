@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Transcoder-circuits: reverse-engineering LLM circuits with transcoders
 
 This repository contains tools for understanding what's going on inside large language models by using a tool called "transcoders". Transcoders decompose MLP sublayers in transformer models into a sparse linear combination of interpretable features. By using transcoders, we can reverse-engineer fine-grained circuits of features within the model.
@@ -13,3 +14,6 @@ To get started, we recommend working through the `walkthrough.ipynb` notebook. T
 * `setup.sh`: A shell script for installing dependencies and downloading transcoder weights.
 * `requirements.txt`: The standard Python dependencies list.
 * `train_transcoder.py`: An example script for training a transcoder. 
+=======
+# feature-trees
+>>>>>>> 269ce3913b8138d8c897f7365ed16b29d0277734
