@@ -29,12 +29,26 @@ for i in range(model.cfg.n_layers):
 #%%
 from transcoder_circuits import load_kissane
 attn_saes_dic = load_kissane.get_saes()
-attn_saes = [attn_saes_dic[f'blocks.{layer}.attn.hook_z'] for layer in range(model.cfg.n_layers)]
-for sae in attn_saes:
+unscaled_attn_saes = [attn_saes_dic[f'blocks.{layer}.attn.hook_z'] for layer in range(model.cfg.n_layers)]
+attn_saes = []
+for layer in range(model.cfg.n_layers):
+    sae = attn_saes_dic[f'blocks.{layer}.attn.hook_z']
+    new_sae = sae
+
     sae.W_enc = torch.nn.Parameter(sae.W_enc[:, :24575], requires_grad=False)
     sae.b_enc = torch.nn.Parameter(sae.b_enc[:24575], requires_grad=False)
     sae.W_dec = torch.nn.Parameter(sae.W_dec[:24575, :], requires_grad=False)
     sae.b_dec = torch.nn.Parameter(sae.b_dec, requires_grad=False)
+
+    W_dec_z = rearrange(new_sae.W_dec, "nf (nhead dhead) -> nf nhead dhead", nhead=model.cfg.n_heads)
+    W_dec_resid = einsum(W_dec_z, model.W_O[layer], "nf nhead dhead, nhead dhead dmodel -> nf dmodel")
+    
+    norms = W_dec_resid.norm(dim=-1, keepdim=True) # [nf, 1]
+
+    new_sae.W_dec = torch.nn.Parameter( sae.W_dec / norms )
+    new_sae.W_enc = torch.nn.Parameter( sae.W_enc * norms.T )
+    new_sae.b_enc = torch.nn.Parameter( sae.b_enc * norms.squeeze() )
+    attn_saes.append(new_sae)
 
 del attn_saes_dic
 gc.collect()
@@ -349,7 +363,9 @@ class CircuitFinder:
                 
         # Append to the graph
         for edge, value in zip(edges, attrib_values):
-            self.graph.append((edge, value.item()))
+            # don't bother adding nodes at pos=0, since this is BOS token
+            if not edge[1].split('.')[2] == '0':
+                self.graph.append((edge, value.item()))
 
 
 
@@ -359,8 +375,8 @@ class CircuitFinder:
 
 
 # %%
-tokens = model.to_tokens(["When John and Mary were at the park, John passed the ball to Mary"])
-cfg = Config(threshold=0.1)
+tokens = model.to_tokens(["One two three four (wait for it) five"])
+cfg = Config(threshold=0.2)
 finder = CircuitFinder(cfg, tokens, model, attn_saes, transcoders)
 #%%
 
@@ -375,15 +391,21 @@ for layer in reversed(range(1, model.cfg.n_layers)):
     finder.ov_step(layer)
     print("num edges = ", len(finder.graph))
     print()
-
-# %%
+#%%
 finder.graph
-
-#%%
-len(finder.graph), len(set(finder.graph))
-
-#%%
-tokens.shape
 # %%
-torch.where(finder.mlp_feature_acts[0,1,:]>0)
+mlp_mlp = [(edge, attrib) for (edge, attrib) in finder.graph[1:] if (edge[0].split('.')[0] == "mlp" and edge[1].split('.')[0] == "mlp")]
+mlp_attn = [(edge, attrib) for (edge, attrib) in finder.graph[1:] if (edge[0].split('.')[0] == "mlp" and edge[1].split('.')[0] == "attn")]
+attn_attn = [(edge, attrib) for (edge, attrib) in finder.graph[1:] if (edge[0].split('.')[0] == "attn" and edge[1].split('.')[0] == "attn")]
+attn_mlp = [(edge, attrib) for (edge, attrib) in finder.graph[1:] if (edge[0].split('.')[0] == "attn" and edge[1].split('.')[0] == "mlp")]
+
 #%%
+attn_attn
+
+# %%
+print(len(mlp_mlp))
+print(len(mlp_attn))
+print(len(attn_attn))
+print(len(attn_mlp))
+# %%
+
